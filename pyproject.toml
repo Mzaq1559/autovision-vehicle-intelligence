@@ -1,0 +1,31 @@
+[project]
+name = "autovision-vehicle-intelligence"
+version = "0.1.0"
+description = "Real-time vehicle detection, tracking, speed estimation, and traffic analytics."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Muhammad Zulqarnain Abdullah" }]
+
+dependencies = [
+    "ultralytics>=8.2.0",
+    "opencv-python>=4.9.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "streamlit>=1.35.0",
+    "plotly>=5.22.0",
+    "PyYAML>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["app"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

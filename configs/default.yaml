@@ -1,0 +1,59 @@
+# AutoVision default configuration.
+# Copy this file (e.g. to configs/my_scene.yaml) and adjust it per camera/scene.
+# Every value here can also be changed live from the Streamlit sidebar for
+# quick experimentation; edit this file for durable, scene-specific defaults.
+
+model:
+  weights: yolov8n.pt        # Ultralytics model name or path to local weights
+  device: auto                # auto | cpu | cuda
+  confidence: 0.35
+  iou_threshold: 0.45
+  classes:
+    - car
+    - motorcycle
+    - bus
+    - truck
+
+tracker:
+  type: bytetrack             # bytetrack | botsort
+  track_buffer: 30
+  match_threshold: 0.8
+  trajectory_length: 40       # number of recent points kept per vehicle
+
+calibration:
+  # Real-world distance, in meters, between the two reference points below.
+  # Measure this on-site (e.g. lane-marking spacing, a fixed known distance).
+  reference_distance_m: 20.0
+  # Pixel coordinates [x, y] of the two calibration points in your video.
+  reference_points_px:
+    - [100.0, 600.0]
+    - [100.0, 200.0]
+  fps: null                   # null => read FPS from the video/camera
+
+measurement_zone:
+  line_y_fraction: 0.6        # 0-1, fraction of frame height
+  line_thickness_px: 4
+
+speed:
+  limit_kmh: 60.0
+  smoothing_window: 5
+  min_samples_for_estimate: 3
+
+direction:
+  mode: screen_relative       # screen_relative | geographic
+  min_displacement_px: 6.0
+  geographic_labels:
+    up: Northbound
+    down: Southbound
+    left: Westbound
+    right: Eastbound
+
+counting:
+  line_y_fraction: 0.6
+  line_thickness_px: 4
+
+video:
+  default_fps: 30.0
+  max_width: 1280
+
+log_level: INFO

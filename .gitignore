@@ -1,0 +1,48 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+*.env.local
+
+# Model weights (downloaded at runtime, not committed)
+*.pt
+*.onnx
+*.engine
+weights/
+
+# Video / media (never committed — see README for sample sources)
+*.mp4
+*.avi
+*.mov
+*.mkv
+assets/*
+!assets/.gitkeep
+
+# Datasets
+datasets/
+*.csv.gz
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
