@@ -1,314 +1,356 @@
 # AutoVision — Real-Time Vehicle Intelligence & Traffic Analytics
 
-An intermediate-level computer vision system that detects, tracks, and
-analyzes vehicles from video files or a live camera stream. It estimates
-approximate speed, counts vehicles by type, flags speed-limit violations,
-and presents everything in an interactive Streamlit dashboard.
+AutoVision is a computer-vision system that detects, tracks, and analyzes vehicles from video files or a live camera feed. It chains a YOLO object-detection model (via [Ultralytics](https://docs.ultralytics.com/)) with ByteTrack or BoT-SORT multi-object tracking, a calibrated pixel-to-meter speed estimator, directional analysis, line-crossing vehicle counting, and speed-violation flagging — all surfaced through an interactive Streamlit dashboard with live Plotly charts. Speed estimates are **approximate** (derived from a single pixel-to-meter calibration reference, not radar or lidar) and are intended for analytics and educational use, not law enforcement.
 
-> **Scope note:** this project is for traffic analytics and educational
-> computer vision purposes. It does not perform facial recognition, does
-> not identify private individuals, and does not take any automated
-> law-enforcement action. See [Privacy and Responsible Use](#privacy-and-responsible-use).
-
-## Description
-
-AutoVision runs a YOLO object detector over each frame to find cars,
-motorcycles, buses, and trucks, then uses a modern multi-object tracker
-(ByteTrack, or BoT-SORT as an alternative) to give each vehicle a
-persistent ID as it moves through the scene. From each vehicle's tracked
-trajectory, AutoVision derives:
-
-- an **approximate speed** (current, average, and maximum), using a
-  configurable, user-calibrated pixel-to-meter scale;
-- a **travel direction** (screen-relative or geographic, if configured);
-- **counts** of vehicles crossing a configurable line, broken down by type;
-- **speed-violation flags** against a configurable speed limit;
-- a **trajectory trail** for each vehicle.
-
-All of this is surfaced in a Streamlit dashboard: an annotated video feed,
-live statistics, a per-vehicle table, and traffic analytics charts.
+---
 
 ## Features
 
-- Vehicle detection (car, motorcycle, bus, truck) with class, confidence,
-  and a unique tracking ID per vehicle
-- Multi-object tracking (ByteTrack / BoT-SORT) with persistent IDs
-- Configurable, calibration-based speed estimation (current / average / max)
-- Vehicle counting by type, with duplicate-count prevention via a
-  configurable counting line
-- Direction estimation (screen-relative or geographic labels)
-- Per-vehicle statistics: type, confidence, speeds, direction, time in
-  scene, trajectory, violation status
-- Configurable speed-limit violation detection and a violations log
-- Trajectory visualization with a configurable history length
-- Streamlit dashboard: annotated video, live stats, vehicle table, and
-  Plotly charts (by type, count over time, speed distribution, average
-  speed over time, violations over time)
-- Three input modes: video file upload, webcam (where available), and a
-  documented sample/demo path
-- YAML-based configuration — no hardcoded thresholds or paths
-- CPU-compatible by default, with automatic CUDA use when available
-- Unit tests for the pure-logic pieces (speed math, calibration,
-  counting, direction, violations) that run without a GPU or model
-  download
+- **YOLO-based vehicle detection** — uses Ultralytics YOLOv8 (configurable model weights) filtered to vehicle classes: `car`, `motorcycle`, `bus`, `truck` (editable in config).
+- **Multi-object tracking** — ByteTrack (default) or BoT-SORT, selectable via `tracker.type` in config; wraps the Ultralytics `model.track()` API.
+- **Calibrated speed estimation** — pixel displacement between frames is converted to km/h through a user-supplied two-point reference distance. A sliding-window average smooths per-frame noise.
+- **Speed-violation detection** — flags any tracked vehicle whose smoothed speed exceeds the configured `speed.limit_kmh`.
+- **Directional analysis** — labels each vehicle's travel direction as screen-relative (`Moving Up`, `Moving Down`, `Moving Left`, `Moving Right`) or geographic (`Northbound`, `Southbound`, etc.) based on net trajectory displacement.
+- **Line-crossing vehicle counting** — a configurable horizontal measurement line counts each vehicle exactly once when it crosses, broken down by vehicle type.
+- **Per-vehicle trajectory rendering** — recent position history is drawn as a polyline overlay on the video frame (togglable in the sidebar).
+- **Live Streamlit dashboard** — real-time metrics (active vehicles, total counted, average/max speed, violations, counts by type), a per-vehicle data table, and Plotly charts (vehicle count over time, average speed over time, speed distribution histogram, vehicles by type, violations over time).
+- **Three input modes** — upload a video file (`.mp4`, `.avi`, `.mov`, `.mkv`), connect a local webcam, or a "Sample / demo" placeholder that explains where to source a Creative-Commons traffic clip.
+- **Sidebar configuration** — detection confidence, IoU threshold, speed limit, measurement-line position, and calibration distance are adjustable live without restarting.
+- **Environment-variable overrides** — `AUTOVISION_CONFIG` to point to a custom YAML config file; `AUTOVISION_LOG_LEVEL` to change the log level.
+
+---
 
 ## Architecture
 
-```
-Video / Camera
-      │
-      ▼
-Vehicle Detection (Ultralytics YOLO)
-      │
-      ▼
-Multi-Object Tracking (ByteTrack / BoT-SORT)
-      │
-      ▼
-Trajectory Extraction (per-track position history)
-      │
-      ▼
-Speed Estimation (calibrated pixel→meter conversion)
-      │
-      ▼
-Traffic Analytics (counting, violations, per-type stats)
-      │
-      ▼
-Streamlit Dashboard (video overlay, tables, charts)
-```
+AutoVision is organized as a set of single-responsibility modules under `app/`, wired together by a thin Streamlit entry point (`app/streamlit_app.py`). Business logic is deliberately kept out of the UI layer so each component can be tested independently.
+
+**Pipeline summary:**
+
+1. `app/utils/video.py` — opens the video file or camera and yields frames.
+2. `app/tracking/tracker.py` (`VehicleTracker`) — runs YOLO detection + tracking (`model.track()`) on each frame, producing `Detection` objects.
+3. `app/speed/calibration.py` (`PixelToMeterCalibrator`) — derives a meters-per-pixel scale factor from two user-supplied reference points.
+4. `app/speed/estimator.py` (`SpeedEstimator`) — converts pixel displacement between consecutive detections into smoothed km/h using the calibrator.
+5. `app/tracking/tracker.py` (`estimate_direction`) — labels each vehicle's travel direction from its trajectory.
+6. `app/analytics/traffic.py` (`TrafficAnalytics`) — counts line crossings, evaluates speed violations, and produces `TrafficSnapshot` aggregates.
+7. `app/visualization/renderer.py` (`render_frame`) — composites bounding boxes, labels, trajectories, and the measurement line onto each frame.
+8. `app/streamlit_app.py` — displays the annotated video stream, live metric cards, a vehicle data table, and Plotly analytics charts.
 
 ```mermaid
-flowchart TD
-    A[Video File / Webcam] --> B[Vehicle Detection - YOLO]
-    B --> C[Multi-Object Tracking - ByteTrack/BoT-SORT]
-    C --> D[Trajectory Extraction]
-    D --> E[Speed Estimation - Calibration]
-    D --> F[Direction Estimation]
-    C --> G[Traffic Analytics - Counting/Violations]
-    E --> G
-    F --> G
-    G --> H[Streamlit Dashboard]
-    E --> H
+flowchart LR
+    A["Video File / Webcam"] -->|"frames"| B["VideoSource\n(app/utils/video.py)"]
+    B -->|"frame"| C["VehicleTracker\n(app/tracking/tracker.py)"]
+    C -->|"Detection list"| D["SpeedEstimator\n(app/speed/estimator.py)"]
+    D -->|"speed samples"| E["TrafficAnalytics\n(app/analytics/traffic.py)"]
+    C -->|"trajectory"| F["estimate_direction\n(app/tracking/tracker.py)"]
+    F -->|"direction label"| E
+    E -->|"snapshot + tracks"| G["render_frame\n(app/visualization/renderer.py)"]
+    G -->|"annotated frame"| H["Streamlit Dashboard\n(app/streamlit_app.py)"]
+    E -->|"history"| H
 ```
 
-Code is organized by responsibility under `app/`: `detection/` (raw YOLO
-inference), `tracking/` (detect+track pipeline and direction logic),
-`speed/` (calibration and speed math), `analytics/` (counting/violations/
-history), `visualization/` (OpenCV overlay drawing), `config/` (typed
-settings loaded from YAML), and `models/` (shared dataclasses).
+---
 
 ## Demo
 
-Run the Streamlit app and use the sidebar to pick an input mode. The main
-panel shows the annotated video feed (bounding boxes, IDs, class, speed,
-direction, trajectories, and violation highlighting in red), live metric
-cards, a sortable vehicle table, and analytics charts below.
+The Streamlit dashboard displays:
 
-**Screenshots:** not included in this repository yet. If you'd like to add
-some, run the app locally, capture a few frames of the dashboard, and drop
-them into `docs/screenshots/` with a short caption in this section — please
-avoid screenshots containing real, identifiable license plates or people.
+- **Annotated video stream** — bounding boxes colored green (normal) or red (violation), labeled with track ID, vehicle class, confidence percentage, and current speed in km/h. A blue horizontal "measurement / counting line" is drawn at the configured fraction of frame height. Vehicle trajectories appear as polyline overlays.
+- **Metric cards** — Total vehicles, Currently visible, Avg speed (km/h), Max speed (km/h), Violations, and By type.
+- **Vehicle table** — a live `DataFrame` of every active track (ID, Type, Confidence, Current / Average / Max Speed, Direction, Time in Scene, Violation status).
+- **Plotly charts** — Vehicles by type (bar), Speed distribution (histogram), Vehicle count over time (line), Average speed over time (line), Violations over time (line).
+
+To run the dashboard, see the [Usage](#usage) section below.
+
+> **Screenshots:** No screenshots are bundled with this repository yet. To add them, place images in `assets/` (the directory is `.gitkeep`-tracked) and reference them here, e.g. `![Dashboard](assets/dashboard.png)`.
+
+---
 
 ## Requirements
 
-- Python 3.11+
-- pip
-- ~2 GB free disk space for dependencies (PyTorch + Ultralytics)
-- A CUDA-capable GPU is optional; the system runs on CPU by default
-  (see [Performance](#performance))
+| Requirement | Version |
+|---|---|
+| Python | ≥ 3.11 (per `pyproject.toml` `requires-python`) |
+| OS | Linux, macOS, or Windows (any platform supported by OpenCV and PyTorch) |
+| GPU | Optional — `model.device: auto` in the config auto-selects CUDA when available, otherwise falls back to CPU |
+
+Core dependencies (from `requirements.txt`):
+
+- `ultralytics >= 8.2.0`
+- `opencv-python >= 4.9.0`
+- `numpy >= 1.26.0`
+- `pandas >= 2.2.0`
+- `streamlit >= 1.35.0`
+- `plotly >= 5.22.0`
+- `PyYAML >= 6.0.1`
+
+Dev dependency: `pytest >= 8.2.0`
+
+---
 
 ## Installation
 
 ```bash
+# 1. Clone the repository
 git clone https://github.com/Mzaq1559/autovision-vehicle-intelligence.git
 cd autovision-vehicle-intelligence
 
+# 2. Create and activate a virtual environment
 python -m venv .venv
-source .venv/bin/activate      # macOS/Linux
-# .venv\Scripts\activate       # Windows (cmd)
-# .venv\Scripts\Activate.ps1   # Windows (PowerShell)
 
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows (PowerShell)
+# .venv\Scripts\Activate.ps1
+
+# Windows (cmd)
+# .venv\Scripts\activate.bat
+
+# 3. Install dependencies
 pip install -r requirements.txt
+
+# 4. (Optional) Install the project itself in editable mode
+pip install -e .
 ```
+
+On first run, Ultralytics will automatically download the `yolov8n.pt` weights (~6 MB) if they are not already present. No manual model download is required.
+
+---
 
 ## Usage
 
-Start the dashboard:
+### Starting the dashboard
 
 ```bash
 streamlit run app/streamlit_app.py
 ```
 
-Then, in the browser tab that opens:
+The app opens at `http://localhost:8501` by default.
 
-1. Adjust settings in the sidebar (detection confidence, IoU threshold,
-   speed limit, counting-line position, calibration distance).
-2. Choose an **input mode**:
-   - **Video file** — upload an `.mp4`, `.avi`, `.mov`, or `.mkv` file.
-   - **Webcam** — set a camera index and click "Start webcam". This
-     requires a camera physically available to the machine running the
-     Streamlit process; it will not work in most hosted/containerized
-     deployments. If unavailable, upload a short clip instead (see the
-     in-app message).
-   - **Sample / demo** — no video is bundled with this repository (to
-     avoid shipping copyrighted media). Download a short Creative-Commons
-     or otherwise licensed traffic clip, place it under `assets/`, then
-     use "Video file" to upload it. Search terms like "traffic intersection
-     stock footage CC0" on sites such as Pexels or Pixabay turn up
-     suitable clips.
-3. Click "Stop processing" at any time to end the current run; the
-   dashboard's charts populate from the run's history.
+### Input modes
 
-The first run downloads YOLO weights automatically (see
-[Model Management](#model-management-1)).
+The sidebar offers three input modes:
+
+1. **Video file** — upload an `.mp4`, `.avi`, `.mov`, or `.mkv` file through the Streamlit file uploader. The file is written to a temporary location and processed frame by frame. This is the recommended mode for getting started.
+
+2. **Webcam** — select a camera index (default `0`) and click **Start webcam**. This requires a camera accessible to the machine running the Streamlit process. In hosted or containerized environments a camera is typically unavailable; in that case, use Video file mode with a short clip instead.
+
+3. **Sample / demo** — no sample video is bundled with the repository (to avoid shipping copyrighted media). The sidebar displays instructions to download a short Creative-Commons traffic clip, place it in `assets/`, and then use the Video file uploader. Example sources:
+   - [Pexels free traffic videos](https://www.pexels.com/search/videos/traffic/)
+   - [Pixabay free traffic footage](https://pixabay.com/videos/search/traffic/)
+
+### Sidebar controls
+
+While processing, the sidebar exposes live-adjustable parameters:
+
+- **Detection confidence** (slider, 0.05–0.95)
+- **IoU threshold** (slider, 0.1–0.9)
+- **Speed limit (km/h)** (numeric input)
+- **Measurement / counting line** position (slider, 0.05–0.95 fraction of frame height)
+- **Calibration reference distance (m)** (numeric input)
+- **Show trajectories** (checkbox)
+
+A collapsible **"About speed estimates"** panel reminds the user that speeds are approximate.
+
+---
 
 ## Speed Estimation Method
 
-Speed is computed from **pixel displacement over time**, converted to
-real-world units using a scale factor you supply (meters per pixel derived
-from two reference points a known distance apart). This is a linear
-approximation: it assumes the measurement region is roughly perpendicular
-to the camera and close to the calibrated reference. **It is not a
-substitute for radar/lidar or a fully perspective-corrected, surveyed
-camera rig**, and speeds should be treated as approximate for analytics
-and educational purposes. See [Calibration](#calibration) and
-[docs/calibration.md](docs/calibration.md) for full detail, including how
-to improve accuracy.
+Speed estimation is performed by `app/speed/estimator.py` (`SpeedEstimator`) using `app/speed/calibration.py` (`PixelToMeterCalibrator`).
+
+**How it works:**
+
+1. The operator provides two pixel coordinates and the real-world distance between them (in meters) via the `calibration` section of the config. `PixelToMeterCalibrator` divides the real-world distance by the Euclidean pixel distance to compute a single **meters-per-pixel** scale factor.
+2. For each tracked vehicle, the `SpeedEstimator` computes the pixel displacement between the vehicle's foot-point (bottom-center of the bounding box) in consecutive frames, multiplies by meters-per-pixel, divides by the inter-frame time interval, and converts to km/h.
+3. A sliding-window average (`speed.smoothing_window`, default 5 samples) reduces frame-to-frame jitter from detection noise. No speed is reported until `speed.min_samples_for_estimate` (default 3) samples have been collected for a given track.
+
+**What this is _not_:**
+
+- This is a **linear pixel-to-meter approximation**, not a full perspective transform or homography.
+- It assumes the measurement zone is roughly perpendicular to the camera's viewing axis and at a similar depth to the calibration reference.
+- Accuracy degrades toward frame edges, at steep camera angles, or when vehicles deviate significantly from the calibrated plane.
+- It is **not a substitute for radar, lidar, or legally calibrated enforcement equipment**.
+
+---
 
 ## Calibration
 
-See [docs/calibration.md](docs/calibration.md) for the full guide. In
-short: measure a known real-world distance between two points visible in
-your scene, note their pixel coordinates, and enter both in
-`configs/default.yaml` under `calibration:`.
+Calibration is required to convert pixel displacement into real-world speed. The process is:
+
+1. Choose two points in the video frame whose real-world distance you can measure (e.g., lane-marking spacing, a known gap between poles).
+2. Find their pixel coordinates `(x, y)` in a representative frame.
+3. Enter the pixel coordinates in `calibration.reference_points_px` and the measured distance in `calibration.reference_distance_m` in `configs/default.yaml` (or a scene-specific copy).
+4. Position the measurement line (`measurement_zone.line_y_fraction`) near the calibrated reference for best accuracy.
+
+For detailed guidance, caveats, and tips for improving accuracy, see [docs/calibration.md](docs/calibration.md).
+
+---
 
 ## Configuration
 
-All tunable parameters live in `configs/default.yaml` (copy it to make a
-scene-specific config, e.g. `configs/my_intersection.yaml`, and point
-`AUTOVISION_CONFIG` at it, or load it directly). Key sections:
+All configuration is defined in `configs/default.yaml` and loaded by `app/config/settings.py` (`load_config`). Copy the file (e.g. `configs/my_scene.yaml`) and set `AUTOVISION_CONFIG=configs/my_scene.yaml` to use a custom configuration. Every value can also be adjusted at runtime via the Streamlit sidebar.
 
-| Section | Purpose |
-|---|---|
-| `model` | YOLO weights path, device (`auto`/`cpu`/`cuda`), confidence, IoU threshold, class filter |
-| `tracker` | Tracker type (`bytetrack`/`botsort`), buffer size, match threshold, trajectory history length |
-| `calibration` | Reference pixel points + real-world distance for speed conversion; optional FPS override |
-| `measurement_zone` | Where the counting/measurement line sits (fraction of frame height) |
-| `speed` | Speed limit, smoothing window, minimum samples before reporting a speed |
-| `direction` | Screen-relative vs. geographic labels, minimum displacement to avoid "Stationary" noise |
-| `counting` | Counting-line position and thickness |
-| `video` | Default FPS fallback, max processing width |
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `model.weights` | `str` | `yolov8n.pt` | Ultralytics model name or path to local weights file |
+| `model.device` | `str` | `auto` | Inference device: `auto` (selects CUDA if available, else CPU), `cpu`, or `cuda` |
+| `model.confidence` | `float` | `0.35` | Minimum detection confidence threshold |
+| `model.iou_threshold` | `float` | `0.45` | IoU threshold for non-maximum suppression |
+| `model.classes` | `list[str]` | `[car, motorcycle, bus, truck]` | COCO class names to detect (others are filtered out) |
+| `tracker.type` | `str` | `bytetrack` | Tracking algorithm: `bytetrack` or `botsort` |
+| `tracker.track_buffer` | `int` | `30` | Number of frames a lost track is kept before deletion |
+| `tracker.match_threshold` | `float` | `0.8` | Association matching threshold for the tracker |
+| `tracker.trajectory_length` | `int` | `40` | Number of recent positions kept per vehicle for trajectory display |
+| `calibration.reference_distance_m` | `float` | `20.0` | Real-world distance (meters) between the two calibration reference points |
+| `calibration.reference_points_px` | `list[list[float]]` | `[[100, 600], [100, 200]]` | Pixel `[x, y]` coordinates of the two calibration points |
+| `calibration.fps` | `float \| null` | `null` | Override FPS; `null` reads FPS from the video/camera source |
+| `measurement_zone.line_y_fraction` | `float` | `0.6` | Position of the measurement/counting line as a fraction (0–1) of frame height |
+| `measurement_zone.line_thickness_px` | `int` | `4` | Thickness of the measurement line overlay in pixels |
+| `speed.limit_kmh` | `float` | `60.0` | Speed limit (km/h) above which a violation is flagged |
+| `speed.smoothing_window` | `int` | `5` | Number of recent speed samples averaged for each vehicle |
+| `speed.min_samples_for_estimate` | `int` | `3` | Minimum samples before a speed is reported for a track |
+| `direction.mode` | `str` | `screen_relative` | Direction label style: `screen_relative` or `geographic` |
+| `direction.min_displacement_px` | `float` | `6.0` | Minimum net pixel displacement before a direction is assigned (below = "Stationary") |
+| `direction.geographic_labels` | `dict` | `{up: Northbound, ...}` | Mapping from screen-space bearing to geographic label (used when `mode: geographic`) |
+| `counting.line_y_fraction` | `float` | `0.6` | Counting-line position (mirrors `measurement_zone.line_y_fraction`) |
+| `counting.line_thickness_px` | `int` | `4` | Counting-line rendering thickness |
+| `video.default_fps` | `float` | `30.0` | Fallback FPS when the video source does not report one |
+| `video.max_width` | `int` | `1280` | Maximum frame width in pixels; larger frames are downscaled preserving aspect ratio |
+| `log_level` | `str` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`); also overridable via `AUTOVISION_LOG_LEVEL` env var |
 
-Many of these (confidence, IoU, speed limit, counting line, calibration
-distance) can also be adjusted live from the Streamlit sidebar for quick
-iteration; edit the YAML for durable, per-scene defaults.
+---
 
 ## Project Structure
 
 ```
 autovision-vehicle-intelligence/
 ├── app/
-│   ├── streamlit_app.py       # Dashboard entry point
-│   ├── config/settings.py     # Typed config loaded from YAML
-│   ├── detection/detector.py  # Standalone frame-level YOLO detection
-│   ├── tracking/tracker.py    # Detect+track pipeline, direction estimation
+│   ├── __init__.py                  # Package marker, exports __version__
+│   ├── streamlit_app.py             # Streamlit dashboard entry point
+│   ├── analytics/
+│   │   ├── __init__.py
+│   │   └── traffic.py               # TrafficAnalytics, TrafficSnapshot, counting, violations
+│   ├── config/
+│   │   ├── __init__.py
+│   │   └── settings.py              # AppConfig dataclasses, YAML loader
+│   ├── detection/
+│   │   ├── __init__.py
+│   │   └── detector.py              # VehicleDetector (standalone YOLO predict, no tracking)
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── vehicle.py               # Detection and VehicleTrack dataclasses
 │   ├── speed/
-│   │   ├── calibration.py     # Pixel→meter scale factor
-│   │   └── estimator.py       # Speed math + smoothing
-│   ├── analytics/traffic.py   # Counting, violations, history/snapshots
-│   ├── visualization/renderer.py  # OpenCV overlay drawing
-│   ├── models/vehicle.py      # Detection / VehicleTrack dataclasses
-│   └── utils/video.py         # Video/camera source handling
-├── configs/default.yaml       # Example configuration
-├── tests/                     # Unit tests (no GPU / model download required)
-├── docs/calibration.md        # Calibration guide
-├── assets/                    # Local sample media (gitignored; not shipped)
-├── requirements.txt
-├── pyproject.toml
-└── LICENSE
+│   │   ├── __init__.py
+│   │   ├── calibration.py           # PixelToMeterCalibrator, InvalidCalibrationError
+│   │   └── estimator.py             # SpeedEstimator, instantaneous_speed_kmh, is_speed_violation
+│   ├── tracking/
+│   │   ├── __init__.py
+│   │   └── tracker.py               # VehicleTracker (YOLO track), estimate_direction
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   └── video.py                 # VideoSource, VideoSourceError, resize_keep_aspect
+│   └── visualization/
+│       ├── __init__.py
+│       └── renderer.py              # draw_detections, draw_trajectories, render_frame
+├── assets/
+│   └── .gitkeep                     # Placeholder — put sample videos or screenshots here
+├── configs/
+│   └── default.yaml                 # Default configuration (copy per scene)
+├── docs/
+│   └── calibration.md               # Calibration guide and caveats
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py                  # Adds project root to sys.path
+│   ├── test_analytics.py            # Unit tests for counting, violations, snapshots
+│   ├── test_speed.py                # Unit tests for calibration, speed estimation
+│   └── test_tracking.py             # Unit tests for direction estimation, Detection, VehicleTrack
+├── .env.example                     # Optional environment variable overrides
+├── .github/
+│   └── workflows/
+│       └── tests.yml                # GitHub Actions CI (pytest on Python 3.11)
+├── .gitignore
+├── LICENSE                          # MIT License
+├── pyproject.toml                   # Project metadata, dependencies, pytest config
+├── requirements.txt                 # Pip-installable dependencies
+└── README.md                        # This file
 ```
+
+---
 
 ## Testing
 
+The test suite lives in `tests/` and covers the pure-logic layers (calibration, speed estimation, direction estimation, counting, violations, data models). These tests **do not require a GPU, a YOLO model download, or any video files** — they exercise only the mathematical and state-management code.
+
 ```bash
-pip install -r requirements.txt   # or: pip install -e ".[dev]"
+# Run the full test suite
+pytest tests/ -v
+
+# Or, if you installed dev dependencies via pyproject.toml
+pip install -e ".[dev]"
 pytest
 ```
 
-The test suite (`tests/test_speed.py`, `tests/test_tracking.py`,
-`tests/test_analytics.py`) covers calibration math, speed calculation and
-smoothing, direction estimation, vehicle-track state updates, line-crossing
-and counting logic, and speed-violation detection. These are pure-Python
-unit tests — they do not require a GPU, a webcam, or downloading YOLO
-weights, and were run and passed in this project's build environment.
+The CI workflow (`.github/workflows/tests.yml`) installs only `pytest` and `pyyaml` (no Ultralytics, no OpenCV) and runs the tests on `ubuntu-latest` with Python 3.11. This confirms that the unit tests are self-contained and do not depend on heavy ML dependencies.
 
-Detection/tracking modules that depend on `ultralytics`/OpenCV are
-structured to be testable in principle but are not exercised by the
-default test suite, since that would require downloading model weights;
-they can be covered by separate integration tests if desired.
+**What is _not_ tested offline:**
+
+- `VehicleTracker.track_frame()` and `VehicleDetector.detect_frame()` call into Ultralytics and require the `ultralytics` package plus a model download. These are integration-level concerns and are not covered by the current unit tests.
+- The Streamlit UI (`streamlit_app.py`) and visualization rendering (`renderer.py`) are not tested by the existing suite.
+
+---
 
 ## Performance
 
-- **CPU:** works out of the box; expect roughly a few frames per second
-  on a modern multi-core CPU with the default `yolov8n.pt` (nano) model,
-  depending on resolution and hardware. This is adequate for analytics on
-  recorded video but may lag behind real-time on a live stream.
-- **GPU (CUDA):** if a CUDA-capable GPU and matching PyTorch build are
-  available, `model.device: auto` selects it automatically, typically
-  giving real-time or near-real-time throughput.
-- Lowering `video.max_width` or choosing a smaller/faster model reduces
-  load at the cost of detection quality.
+- **GPU (CUDA):** When a CUDA-capable GPU is available and `model.device` is set to `auto` (the default), the tracker automatically selects it. YOLOv8n on a mid-range GPU typically processes well above real-time framerates for 720p–1080p video.
+- **CPU:** YOLOv8n is lightweight enough to run on CPU, though expect reduced throughput (roughly 5–15 FPS depending on hardware, resolution, and the number of detections per frame). This is sufficient for analyzing pre-recorded clips but may lag on high-resolution live streams.
+- **Frame resizing:** `video.max_width` (default 1280) downscales large frames before inference, which directly reduces GPU/CPU load.
+- **Smoothing overhead:** The speed estimator, direction estimation, and analytics layers are pure Python arithmetic and add negligible overhead relative to inference.
+
+> **Note:** No formal benchmarks are included in this repository. The numbers above are order-of-magnitude expectations based on the YOLOv8n model size, not measured results from this specific codebase.
+
+---
 
 ## Limitations
 
-- Speed estimation is an approximation dependent on manual camera/scene
-  calibration (see [Speed Estimation Method](#speed-estimation-method)).
-- Accuracy degrades with camera perspective distortion, especially far
-  from the calibrated reference region.
-- Heavy occlusion (vehicles overlapping or hidden behind others) can
-  cause missed detections or track loss.
-- Poor lighting, glare, rain, or motion blur reduce detection quality.
-- Dense/heavy traffic increases the chance of ID switches during tracking.
-- Camera movement (pan/tilt/zoom, vibration) invalidates the calibration
-  and will produce unreliable speeds and directions.
-- Direction labels are derived from simple net-displacement geometry, not
-  true compass bearings, unless you manually map screen directions to
-  geographic ones in the config.
-- This is an educational/analytics tool, not a certified or
-  enforcement-grade measurement system.
+- **Calibration dependency** — Speed accuracy is entirely dependent on the quality of the two-point calibration reference. A poorly measured reference distance, or reference points far from the measurement zone, will produce proportionally incorrect speeds.
+- **No perspective correction** — A single meters-per-pixel scale factor cannot account for perspective distortion across the full frame. Accuracy degrades toward the edges and at steep camera angles.
+- **Detection and tracking noise** — Bounding-box jitter (a few pixels frame-to-frame) translates directly into speed noise. The smoothing window mitigates this but does not eliminate it.
+- **Occlusion** — Vehicles that occlude one another may cause missed detections or ID switches, resulting in lost tracks or incorrect speed/count attribution.
+- **ID switches** — Both ByteTrack and BoT-SORT can reassign track IDs when a vehicle is temporarily lost and re-detected, leading to double-counting or fragmented speed histories.
+- **Camera movement** — The system assumes a static camera. Pan, tilt, zoom, or vibration will invalidate the calibration and produce erratic speed readings.
+- **Lighting conditions** — Sudden lighting changes (e.g. tunnel entries, headlight glare, heavy shadows) can reduce detection reliability.
+- **Vehicle classes** — The default config detects only `car`, `motorcycle`, `bus`, and `truck`. Other COCO classes (e.g. `bicycle`, `person`) are filtered out. The class list is configurable but limited to what the YOLO model was trained on.
+- **No multi-camera support** — The system processes a single video source at a time.
+
+---
 
 ## Privacy and Responsible Use
 
-AutoVision is designed for vehicle and traffic analytics. It does **not**
-perform facial recognition, does **not** attempt to identify individual
-people, and does **not** take automated enforcement actions (e.g. issuing
-citations). License-plate reading is explicitly out of scope for this
-build (see Future Improvements). If you deploy this system, be mindful of
-local laws and regulations regarding video surveillance and traffic
-monitoring, and avoid capturing or retaining identifiable footage of
-people beyond what your use case and applicable law permit.
+AutoVision is designed for **traffic analytics and educational purposes**.
+
+- **No facial recognition** — the system does not detect, identify, or store human faces.
+- **No license-plate reading** — it does not perform OCR or capture plate numbers.
+- **No automated enforcement** — speed violations are flagged in the dashboard as informational indicators, not as legally admissible evidence. The system is not designed for, and should not be used for, automated ticketing or law enforcement.
+- **No data persistence** — all analytics exist only in the Streamlit session state during a run; nothing is written to disk or transmitted over a network.
+
+Users deploying this system should comply with all applicable local privacy and surveillance laws and should not use it to identify, track, or profile individual people.
+
+---
 
 ## Future Improvements
 
-- Full perspective/homography-based calibration instead of a single
-  linear scale factor
-- Optional license-plate detection as a separate, clearly-labeled research
-  module
-- Automatic vehicle re-identification across camera gaps
-- Traffic density / congestion estimation
-- Lane-level detection and per-lane analytics
-- Cloud/edge deployment guide
-- GPU inference optimization (TensorRT/ONNX export)
+- **Perspective / homography correction** — use four or more reference points to compute a full perspective transform, improving speed accuracy across the entire frame rather than just near the calibration zone.
+- **Multi-camera support** — process and correlate multiple video feeds simultaneously.
+- **Re-identification** — track vehicles across camera handoffs using appearance embeddings.
+- **Data export** — write per-vehicle and aggregate analytics to CSV, JSON, or a database for offline analysis.
+- **CLI entry point** — a headless mode for batch-processing video files without the Streamlit UI.
+- **Heatmaps** — generate spatial density or speed heatmaps overlaid on the video.
+- **Night / adverse-condition models** — swap in or fine-tune models for low-light, rain, or fog scenarios.
+- **Deployment packaging** — Docker image and cloud deployment instructions (e.g. Streamlit Community Cloud).
+- **Expanded test coverage** — integration tests for the detector and tracker with a small test video; UI tests for the Streamlit dashboard.
 
-## Model Management
-
-The default model is `yolov8n.pt` (Ultralytics YOLOv8 "nano"), chosen for
-its balance of speed and accuracy on CPU-class hardware for an
-intermediate project. It is **not** committed to this repository — the
-`ultralytics` package downloads it automatically on first use and caches
-it locally. To use a different model (e.g. a larger YOLOv8 variant, or a
-custom-trained model), change `model.weights` in your config to another
-Ultralytics model name or a local `.pt` file path.
+---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for the full text.
