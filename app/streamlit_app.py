@@ -116,6 +116,12 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
 
     tracker = VehicleTracker(config)
 
+    # Compute the target wall-clock interval per frame so playback approximates
+    # the source video's native FPS.  If processing a frame takes longer than
+    # this interval we never wait — the video simply plays at maximum processing
+    # speed instead.
+    target_frame_interval = 1.0 / source.fps if source.fps > 0 else 1.0 / 30.0
+
     frame_slot = st.empty()
     stats_slot = st.empty()
     table_slot = st.empty()
@@ -123,6 +129,9 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
     stop_button = st.button("Stop processing")
 
     for frame_index, frame in source.frames():
+        # Record the start of this frame's work so we can pace playback below.
+        loop_start = time.time()
+
         if stop_button:
             break
 
@@ -184,10 +193,23 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
                 f"Avg speed: {snapshot.average_speed_kmh} km/h  Violations: {snapshot.violations}",
             ],
         )
+        # Push the rendered frame and live stats to the persistent placeholders.
+        # Using the same st.empty() slots (frame_slot, stats_slot, table_slot)
+        # that were created once before the loop ensures Streamlit updates the
+        # existing browser elements rather than appending new ones.
         frame_slot.image(cv2.cvtColor(rendered, cv2.COLOR_BGR2RGB), channels="RGB")
 
         _render_stats(stats_slot, snapshot)
         _render_table(table_slot, analytics, active_ids)
+
+        # Pace playback: sleep only the time remaining in the target frame
+        # interval.  If processing took longer than the interval (slow CPU /
+        # large model) we skip the sleep entirely so we never fall further
+        # behind — the video just plays at the maximum available speed.
+        elapsed = time.time() - loop_start
+        remaining = target_frame_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
 
     source.release()
 
