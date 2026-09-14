@@ -94,3 +94,28 @@ def test_is_speed_violation():
     assert is_speed_violation(70.0, 60.0) is True
     assert is_speed_violation(60.0, 60.0) is False
     assert is_speed_violation(59.9, 60.0) is False
+
+
+def test_instantaneous_speed_rejects_extreme_speed_or_large_dt():
+    calibrator = PixelToMeterCalibrator(
+        reference_points_px=[(0.0, 0.0), (10.0, 0.0)], reference_distance_m=1.0
+    )
+    # Huge jump: 500 meters in 1s => 1800 km/h -> should return 0.0
+    huge_speed = instantaneous_speed_kmh((0.0, 0.0), 0.0, (5000.0, 0.0), 1.0, calibrator)
+    assert huge_speed == 0.0
+
+    # Large gap: dt = 2.0s (> 1.5s limit) -> should return 0.0
+    large_dt = instantaneous_speed_kmh((0.0, 0.0), 0.0, (10.0, 0.0), 2.0, calibrator)
+    assert large_dt == 0.0
+
+
+def test_speed_estimator_ignores_anomaly_spikes():
+    calibrator = PixelToMeterCalibrator(
+        reference_points_px=[(0.0, 0.0), (10.0, 0.0)], reference_distance_m=1.0
+    )
+    estimator = SpeedEstimator(calibrator=calibrator, smoothing_window=2, min_samples_for_estimate=1)
+    estimator.update((0.0, 0.0), 0.0, (10.0, 0.0), 1.0)  # 3.6 km/h
+
+    # Extreme jump (e.g. tracking ID swap): 5000 px in 0.033s => discarded
+    res = estimator.update((10.0, 0.0), 1.0, (5010.0, 0.0), 1.033)
+    assert res == pytest.approx(3.6)

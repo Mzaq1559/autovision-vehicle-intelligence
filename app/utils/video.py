@@ -76,7 +76,7 @@ class VideoSource:
     @classmethod
     def _from_capture(cls, capture: cv2.VideoCapture, default_fps: float) -> "VideoSource":
         fps = capture.get(cv2.CAP_PROP_FPS) or 0.0
-        if not fps or fps != fps or fps <= 0:  # NaN-safe check
+        if not fps or fps != fps or fps <= 0 or fps > 120.0:  # NaN-safe and sane-range check
             fps = default_fps
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0

@@ -95,3 +95,23 @@ def test_active_track_ids_filters_stale_tracks():
 
     active_recent = analytics.active_track_ids(stale_after_s=10.0, now=5.0)
     assert active_recent == [1]
+
+
+def test_total_counted_always_greater_or_equal_active_and_violations():
+    analytics = TrafficAnalytics(speed_limit_kmh=60.0)
+    # Register 3 tracks, 2 active, 1 violation
+    t1 = analytics.get_or_create_track(1, "car", 0.9, timestamp=0.0, trajectory_length=10)
+    t1.current_speed_kmh = 75.0
+    analytics.evaluate_violation(t1)
+
+    t2 = analytics.get_or_create_track(2, "bus", 0.9, timestamp=0.0, trajectory_length=10)
+    t3 = analytics.get_or_create_track(3, "truck", 0.9, timestamp=-5.0, trajectory_length=10)  # Stale
+
+    active_ids = analytics.active_track_ids(stale_after_s=1.0, now=0.5)
+    snap = analytics.snapshot(active_ids=active_ids)
+
+    assert snap.total_counted == 3
+    assert snap.active_vehicles == 2
+    assert snap.violations == 1
+    assert snap.active_vehicles <= snap.total_counted
+    assert snap.violations <= snap.total_counted

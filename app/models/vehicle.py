@@ -58,6 +58,15 @@ class VehicleTrack:
     violation: bool = False
 
     def update_detection(self, detection: Detection) -> None:
+        if detection.timestamp < self.last_seen:
+            # Timestamp moved backwards (e.g. video restart); clear old track history
+            self.positions.clear()
+            self.speed_samples.clear()
+            self.first_seen = detection.timestamp
+            self.current_speed_kmh = 0.0
+            self.average_speed_kmh = 0.0
+            self.max_speed_kmh = 0.0
+
         self.vehicle_type = detection.class_name
         self.confidence = detection.confidence
         self.last_seen = detection.timestamp

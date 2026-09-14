@@ -53,9 +53,21 @@ def _init_session_state(config: AppConfig) -> None:
         st.session_state.processing = False
 
 
-def _get_calibrator(config: AppConfig) -> Optional[PixelToMeterCalibrator]:
+def _get_calibrator(
+    config: AppConfig,
+    source_w: int = 0,
+    source_h: int = 0,
+    display_w: int = 0,
+    display_h: int = 0,
+) -> Optional[PixelToMeterCalibrator]:
     try:
-        points = [tuple(p) for p in config.calibration.reference_points_px]
+        raw_points = [tuple(p) for p in config.calibration.reference_points_px]
+        if source_w > 0 and display_w > 0 and (source_w != display_w or source_h != display_h):
+            scale_x = display_w / float(source_w)
+            scale_y = display_h / float(source_h) if source_h > 0 else scale_x
+            points = [(px * scale_x, py * scale_y) for (px, py) in raw_points]
+        else:
+            points = raw_points
         return PixelToMeterCalibrator(
             reference_points_px=points,
             reference_distance_m=config.calibration.reference_distance_m,
@@ -135,11 +147,28 @@ def _sidebar_config(config: AppConfig) -> AppConfig:
 
 
 def _process_video(source: VideoSource, config: AppConfig) -> None:
+    st.session_state.processing_run_id = st.session_state.get("processing_run_id", 0) + 1
+
     analytics: TrafficAnalytics = st.session_state.analytics
+    analytics.reset()
     analytics.speed_limit_kmh = config.speed.limit_kmh
     analytics.line_y_fraction = config.measurement_zone.line_y_fraction
+    if "speed_estimators" in st.session_state:
+        st.session_state.speed_estimators.clear()
 
-    calibrator = _get_calibrator(config)
+    display_w = source.width
+    display_h = source.height
+    if config.video.max_width > 0 and source.width > config.video.max_width:
+        display_w = config.video.max_width
+        display_h = int(source.height * (config.video.max_width / float(source.width)))
+
+    calibrator = _get_calibrator(
+        config,
+        source_w=source.width,
+        source_h=source.height,
+        display_w=display_w,
+        display_h=display_h,
+    )
     if calibrator is None:
         return
 

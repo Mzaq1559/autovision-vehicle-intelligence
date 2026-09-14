@@ -9,6 +9,7 @@ rendering style later without touching pipeline code.
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Iterable, List, Tuple
 
 import cv2
@@ -63,12 +64,20 @@ def draw_detections(
     return out
 
 
+MAX_TRAJECTORY_GAP_S: float = 0.5
+MAX_TRAJECTORY_JUMP_PX: float = 150.0
+
+
 def draw_trajectories(frame: np.ndarray, tracks: Iterable[VehicleTrack]) -> np.ndarray:
     out = frame.copy()
     for track in tracks:
-        points = [(int(x), int(y)) for (x, y) in track.trajectory]
-        for i in range(1, len(points)):
-            cv2.line(out, points[i - 1], points[i], TRAJECTORY_COLOR, 2)
+        pos = list(track.positions)
+        for i in range(1, len(pos)):
+            x1, y1, t1 = pos[i - 1]
+            x2, y2, t2 = pos[i]
+            if (t2 - t1) > MAX_TRAJECTORY_GAP_S or math.hypot(x2 - x1, y2 - y1) > MAX_TRAJECTORY_JUMP_PX:
+                continue
+            cv2.line(out, (int(x1), int(y1)), (int(x2), int(y2)), TRAJECTORY_COLOR, 2)
     return out
 
 
@@ -142,9 +151,13 @@ def render_frame(
     # --- trajectories ---
     if show_trajectories:
         for track in tracks.values():
-            points = [(int(x), int(y_)) for (x, y_) in track.trajectory]
-            for i in range(1, len(points)):
-                cv2.line(out, points[i - 1], points[i], TRAJECTORY_COLOR, 2)
+            pos = list(track.positions)
+            for i in range(1, len(pos)):
+                x1, y1, t1 = pos[i - 1]
+                x2, y2, t2 = pos[i]
+                if (t2 - t1) > MAX_TRAJECTORY_GAP_S or math.hypot(x2 - x1, y2 - y1) > MAX_TRAJECTORY_JUMP_PX:
+                    continue
+                cv2.line(out, (int(x1), int(y1)), (int(x2), int(y2)), TRAJECTORY_COLOR, 2)
 
     # --- detection boxes + labels ---
     for det in detections:

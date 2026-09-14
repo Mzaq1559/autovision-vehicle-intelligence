@@ -20,6 +20,8 @@ from app.speed.calibration import PixelToMeterCalibrator
 Point = Tuple[float, float]
 
 MPS_TO_KMH = 3.6
+MAX_VALID_SPEED_KMH = 250.0
+MAX_VALID_DT_SECONDS = 1.5
 
 
 def instantaneous_speed_kmh(
@@ -28,15 +30,20 @@ def instantaneous_speed_kmh(
     p2: Point,
     t2: float,
     calibrator: PixelToMeterCalibrator,
+    max_valid_speed_kmh: float = MAX_VALID_SPEED_KMH,
+    max_dt_s: float = MAX_VALID_DT_SECONDS,
 ) -> float:
     """Speed, in km/h, implied by moving from (p1, t1) to (p2, t2)."""
 
     dt = t2 - t1
-    if dt <= 0:
+    if dt <= 0 or dt > max_dt_s:
         return 0.0
     distance_m = calibrator.pixel_points_to_meters(p1, p2)
     speed_mps = distance_m / dt
-    return speed_mps * MPS_TO_KMH
+    speed_kmh = speed_mps * MPS_TO_KMH
+    if speed_kmh > max_valid_speed_kmh:
+        return 0.0
+    return speed_kmh
 
 
 @dataclass
@@ -72,10 +79,17 @@ class SpeedEstimator:
         misleadingly confident number.
         """
 
+        dt = t2 - t1
+        if dt <= 0 or dt > MAX_VALID_DT_SECONDS:
+            if len(self._samples) < self.min_samples_for_estimate:
+                return None
+            return sum(self._samples) / len(self._samples)
+
         speed = instantaneous_speed_kmh(p1, t1, p2, t2, self.calibrator)
-        self._samples.append(speed)
-        while len(self._samples) > self.smoothing_window:
-            self._samples.popleft()
+        if speed > 0.0:
+            self._samples.append(speed)
+            while len(self._samples) > self.smoothing_window:
+                self._samples.popleft()
 
         if len(self._samples) < self.min_samples_for_estimate:
             return None

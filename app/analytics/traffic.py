@@ -59,6 +59,14 @@ class TrafficAnalytics:
     violation_log: List[dict] = field(default_factory=list)
     history: List[TrafficSnapshot] = field(default_factory=list)
 
+    def reset(self) -> None:
+        """Reset all accumulated state for a new processing run."""
+        self.tracks.clear()
+        self.counts_by_type.clear()
+        self.total_counted = 0
+        self.violation_log.clear()
+        self.history.clear()
+
     def get_or_create_track(
         self,
         track_id: int,
@@ -76,12 +84,19 @@ class TrafficAnalytics:
                 last_seen=timestamp,
                 trajectory_length=trajectory_length,
             )
+            self.total_counted += 1
+            self.counts_by_type[vehicle_type] += 1
+        else:
+            old_type = self.tracks[track_id].vehicle_type
+            if old_type != vehicle_type:
+                self.counts_by_type[old_type] = max(0, self.counts_by_type[old_type] - 1)
+                self.counts_by_type[vehicle_type] += 1
         return self.tracks[track_id]
 
     def maybe_count(self, track: VehicleTrack, frame_height: float) -> bool:
         """Check the track's two most recent positions against the counting
-        line and register a count exactly once per vehicle. Returns True if
-        a new count was registered this call."""
+        line and register a line crossing state once per vehicle. Returns True if
+        a new crossing was registered this call."""
 
         if len(track.positions) < 2:
             return False
@@ -94,8 +109,6 @@ class TrafficAnalytics:
 
         track.counted = True
         track.crossed_zone = True
-        self.total_counted += 1
-        self.counts_by_type[track.vehicle_type] += 1
         return True
 
     def evaluate_violation(self, track: VehicleTrack) -> bool:
