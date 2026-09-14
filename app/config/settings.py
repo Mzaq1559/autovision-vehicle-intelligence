@@ -91,11 +91,14 @@ class CountingConfig:
 class VideoConfig:
     default_fps: float = 30.0
     max_width: int = 960
+    processing_mode: str = "accuracy"  # "accuracy" | "demo"
     # Resolution for YOLO inference. 0 = same as max_width (no extra resize).
     # When non-zero, frames are resized to this width before model.track() and
     # scaled back to max_width for display.  All coordinates (boxes, positions)
     # are expressed in display-resolution space after the inverse scale.
     processing_width: int = 0
+    demo_processing_width: int = 640
+    inference_interval: int = 1
     # How many processed frames to skip between Streamlit metrics/table refreshes.
     # The annotated video frame (frame_slot.image) still updates every frame.
     ui_update_interval: int = 5

@@ -4,8 +4,8 @@
 # quick experimentation; edit this file for durable, scene-specific defaults.
 
 model:
-  weights: yolov8n.pt        # Ultralytics model name or path to local weights
-  device: auto                # auto | cpu | cuda
+  weights: yolov8n.pt # Ultralytics model name or path to local weights
+  device: auto # auto | cpu | cuda
   confidence: 0.35
   iou_threshold: 0.45
   classes:
@@ -15,10 +15,10 @@ model:
     - truck
 
 tracker:
-  type: bytetrack             # bytetrack | botsort
+  type: bytetrack # bytetrack | botsort
   track_buffer: 30
   match_threshold: 0.8
-  trajectory_length: 40       # number of recent points kept per vehicle
+  trajectory_length: 40 # number of recent points kept per vehicle
 
 calibration:
   # Real-world distance, in meters, between the two reference points below.
@@ -28,10 +28,10 @@ calibration:
   reference_points_px:
     - [100.0, 600.0]
     - [100.0, 200.0]
-  fps: null                   # null => read FPS from the video/camera
+  fps: null # null => read FPS from the video/camera
 
 measurement_zone:
-  line_y_fraction: 0.6        # 0-1, fraction of frame height
+  line_y_fraction: 0.6 # 0-1, fraction of frame height
   line_thickness_px: 4
 
 speed:
@@ -40,7 +40,7 @@ speed:
   min_samples_for_estimate: 3
 
 direction:
-  mode: screen_relative       # screen_relative | geographic
+  mode: screen_relative # screen_relative | geographic
   min_displacement_px: 6.0
   geographic_labels:
     up: Northbound
@@ -57,11 +57,14 @@ video:
   # max_width: display/output resolution cap (preserves aspect ratio).
   # Lowered from 1280 to 960 as a better CPU-friendly default.
   max_width: 960
+  processing_mode: accuracy # accuracy | demo
   # processing_width: resolution used for YOLO inference.
   # Set lower than max_width for faster inference (e.g. 640).
   # 0 = same as max_width (no separate inference resize).
   # Detection boxes are automatically scaled back to display resolution.
   processing_width: 0
+  demo_processing_width: 640
+  inference_interval: 1 # Demo mode: infer every N source frames.
   # ui_update_interval: update Streamlit metrics/table every N processed frames.
   # The annotated video frame still updates on every processed frame.
   # Higher values reduce UI overhead on slow CPUs. Default: 5.

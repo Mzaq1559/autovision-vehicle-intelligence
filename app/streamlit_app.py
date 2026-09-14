@@ -41,6 +41,75 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "configs" / "defa
 STALE_TRACK_SECONDS = 3.0
 
 
+def _configure_demo_runtime_limits() -> None:
+    """Use conservative thread limits for Demo mode so the desktop remains responsive."""
+    import os
+
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(var, "4")
+
+    try:
+        import cv2
+        cv2.setNumThreads(2)
+    except Exception:  # pragma: no cover - runtime/platform dependent
+        pass
+
+    try:
+        import torch
+        torch.set_num_threads(4)
+        torch.set_num_interop_threads(1)
+    except Exception:  # pragma: no cover - dependency may be absent
+        pass
+
+
+def _interpolate_display_detections(detections, tracks_by_id, source_timestamp):
+    """Create display-only predictions for skipped inference frames.
+
+    These predicted box positions are only used for the live overlay. They are
+    never written back into tracking state or analytics, so speed/counting/ID
+    integrity stays based on the real observed detections.
+    """
+    out = []
+    for det in detections:
+        track = tracks_by_id.get(det.track_id)
+        if track is None or len(track.positions) < 2:
+            out.append(det)
+            continue
+
+        (x1, y1, t1), (x2, y2, t2) = track.positions[-2], track.positions[-1]
+        if t2 <= t1:
+            out.append(det)
+            continue
+
+        dt = max(0.0, source_timestamp - t2)
+        vx = (x2 - x1) / (t2 - t1)
+        vy = (y2 - y1) / (t2 - t1)
+        x1b, y1b, x2b, y2b = det.bbox
+        cx = (x1b + x2b) / 2.0
+        cy = (y1b + y2b) / 2.0
+        width = max(1.0, x2b - x1b)
+        height = max(1.0, y2b - y1b)
+        new_cx = cx + vx * dt
+        new_cy = cy + vy * dt
+        new_bbox = (
+            new_cx - width / 2.0,
+            new_cy - height / 2.0,
+            new_cx + width / 2.0,
+            new_cy + height / 2.0,
+        )
+        out.append(
+            type(det)(
+                track_id=det.track_id,
+                class_name=det.class_name,
+                confidence=det.confidence,
+                bbox=tuple(new_bbox),
+                frame_index=det.frame_index,
+                timestamp=det.timestamp,
+            )
+        )
+    return out
+
+
 def _init_session_state(config: AppConfig) -> None:
     if "analytics" not in st.session_state:
         st.session_state.analytics = TrafficAnalytics(
@@ -103,17 +172,41 @@ def _sidebar_config(config: AppConfig) -> AppConfig:
         help="Real-world distance between the two calibration points. "
         "See docs/calibration.md.",
     )
+    processing_mode = st.sidebar.radio(
+        "Processing Mode",
+        ("Accuracy", "Demo"),
+        index=0 if str(config.video.processing_mode).lower() == "accuracy" else 1,
+    )
+    config.video.processing_mode = processing_mode.lower()
     show_trajectories = st.sidebar.checkbox("Show trajectories", value=False)
 
     with st.sidebar.expander("Performance settings"):
-        config.video.processing_width = st.sidebar.select_slider(
-            "Inference width (px)",
-            options=[0, 480, 640, 960, 1280],
-            value=int(config.video.processing_width),
-            help="Resolution used for YOLO inference. 0 = same as display width. "
-                 "Lower values are faster; detection boxes are scaled back to "
-                 "display resolution automatically.",
-        )
+        if processing_mode == "Demo":
+            config.video.demo_processing_width = st.sidebar.select_slider(
+                "Demo inference width (px)",
+                options=[480, 640, 768, 960],
+                value=int(config.video.demo_processing_width),
+                help="Demo mode uses a lower AI-processing resolution for smooth CPU playback.",
+            )
+            config.video.processing_width = int(config.video.demo_processing_width)
+            config.video.inference_interval = st.sidebar.number_input(
+                "Inference interval (source frames)",
+                min_value=1,
+                max_value=10,
+                value=max(1, int(config.video.inference_interval)),
+                step=1,
+                help="Run YOLO/ByteTrack every N source frames; skipped frames reuse the last valid visual state.",
+            )
+        else:
+            config.video.processing_width = st.sidebar.select_slider(
+                "Inference width (px)",
+                options=[0, 480, 640, 960, 1280],
+                value=int(config.video.processing_width),
+                help="Resolution used for YOLO inference. 0 = same as display width. "
+                     "Lower values are faster; detection boxes are scaled back to "
+                     "display resolution automatically.",
+            )
+            config.video.inference_interval = 1
         config.video.ui_update_interval = st.sidebar.number_input(
             "UI update every N frames",
             min_value=1,
@@ -121,7 +214,7 @@ def _sidebar_config(config: AppConfig) -> AppConfig:
             value=int(config.video.ui_update_interval),
             step=1,
             help="Metrics and the vehicle table refresh every N processed frames. "
-                 "The annotated video frame always updates every processed frame.",
+                 "The annotated video frame still updates every processed frame.",
         )
         config.video.frame_skip = st.sidebar.number_input(
             "Frame skip",
@@ -129,9 +222,7 @@ def _sidebar_config(config: AppConfig) -> AppConfig:
             max_value=10,
             value=int(config.video.frame_skip),
             step=1,
-            help="Drop N source frames between each processed frame. "
-                 "0 = process every frame (default, safest for tracking). "
-                 "1 = process every 2nd frame. Keep conservative to avoid losing IDs.",
+            help="Only used for explicit source-frame dropping; Demo mode uses inference_interval to preserve source timestamps.",
         )
 
     with st.sidebar.expander("About speed estimates"):
@@ -174,11 +265,20 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
 
     tracker = VehicleTracker(config)
 
+    if config.video.processing_mode.lower() == "demo":
+        _configure_demo_runtime_limits()
+
     # Pipeline configuration.
     ui_interval: int = max(1, int(config.video.ui_update_interval))
     frame_skip: int = max(0, int(config.video.frame_skip))
     # step = every (frame_skip+1)-th frame is processed; others are dropped.
     step: int = frame_skip + 1
+
+    # Demo mode keeps all source frames in the display loop but reduces the
+    # frequency of expensive YOLO inference. Timestamps remain tied to the
+    # original source frame index and fps; only the model execution cadence is
+    # throttled.
+    inference_interval = max(1, int(config.video.inference_interval))
 
     # Determine whether a separate inference resolution is requested.
     # processing_width == 0 means "use display resolution" (no extra resize).
@@ -198,6 +298,7 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
     skipped_frames = 0
     ui_updates = 0
     last_snapshot: Optional[object] = None   # type: ignore[type-arg]
+    last_real_detections = []
 
     for frame_index, frame in source.frames():
         if stop_button:
@@ -233,16 +334,21 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
         # Using the original source frame_index ensures speed estimation uses
         # real video-time intervals regardless of CPU processing speed.
         video_ts: float = frame_index / source.fps if source.fps > 0 else float(frame_index) / 30.0
+        should_infer = (config.video.processing_mode.lower() != "demo") or (frame_index % inference_interval == 0)
 
-        try:
-            detections = tracker.track_frame(infer_frame, frame_index, video_timestamp=video_ts)
-        except RuntimeError as exc:
-            st.error(str(exc))
-            break
+        if should_infer:
+            try:
+                detections = tracker.track_frame(infer_frame, frame_index, video_timestamp=video_ts)
+            except RuntimeError as exc:
+                st.error(str(exc))
+                break
+            last_real_detections = detections
+        else:
+            detections = list(last_real_detections)
 
         # Scale detection boxes back to display resolution if we inferred on a
-        # smaller frame.  Positions appended to VehicleTrack.positions below
-        # will be in display space — consistent with what render_frame() draws.
+        # smaller frame. Positions appended to VehicleTrack.positions below will
+        # be in display space — consistent with what render_frame() draws.
         if coord_scale_x != 1.0 or coord_scale_y != 1.0:
             from app.models.vehicle import Detection as _Det
             scaled: list = []
@@ -265,41 +371,49 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
                 )
             detections = scaled
 
+        # For skipped inference frames, keep the overlay smooth without touching
+        # analytics and speed data. The underlying track history continues to be
+        # driven only by actual detections at their real video timestamps.
+        if not should_infer and detections:
+            tracks_by_id = {tid: analytics.tracks[tid] for tid in analytics.tracks}
+            detections = _interpolate_display_detections(detections, tracks_by_id, video_ts)
+
         # ── Analytics & speed estimation ──────────────────────────────────
-        for det in detections:
-            track = analytics.get_or_create_track(
-                det.track_id,
-                det.class_name,
-                det.confidence,
-                det.timestamp,
-                config.tracker.trajectory_length,
-            )
-            track.update_detection(det)
-
-            estimator = st.session_state.speed_estimators.get(det.track_id)
-            if estimator is None:
-                estimator = SpeedEstimator(
-                    calibrator=calibrator,
-                    smoothing_window=config.speed.smoothing_window,
-                    min_samples_for_estimate=config.speed.min_samples_for_estimate,
+        if should_infer:
+            for det in detections:
+                track = analytics.get_or_create_track(
+                    det.track_id,
+                    det.class_name,
+                    det.confidence,
+                    det.timestamp,
+                    config.tracker.trajectory_length,
                 )
-                st.session_state.speed_estimators[det.track_id] = estimator
+                track.update_detection(det)
 
-            if len(track.positions) >= 2:
-                (x1, y1, t1), (x2, y2, t2) = track.positions[-2], track.positions[-1]
-                speed = estimator.update((x1, y1), t1, (x2, y2), t2)
-                if speed is not None:
-                    track.record_speed_sample(speed)
-                    analytics.evaluate_violation(track)
+                estimator = st.session_state.speed_estimators.get(det.track_id)
+                if estimator is None:
+                    estimator = SpeedEstimator(
+                        calibrator=calibrator,
+                        smoothing_window=config.speed.smoothing_window,
+                        min_samples_for_estimate=config.speed.min_samples_for_estimate,
+                    )
+                    st.session_state.speed_estimators[det.track_id] = estimator
 
-            track.direction = estimate_direction(
-                track.trajectory,
-                mode=config.direction.mode,
-                min_displacement_px=config.direction.min_displacement_px,
-                geographic_labels=config.direction.geographic_labels,
-            )
+                if len(track.positions) >= 2:
+                    (x1, y1, t1), (x2, y2, t2) = track.positions[-2], track.positions[-1]
+                    speed = estimator.update((x1, y1), t1, (x2, y2), t2)
+                    if speed is not None:
+                        track.record_speed_sample(speed)
+                        analytics.evaluate_violation(track)
 
-            analytics.maybe_count(track, display_frame.shape[0])
+                track.direction = estimate_direction(
+                    track.trajectory,
+                    mode=config.direction.mode,
+                    min_displacement_px=config.direction.min_displacement_px,
+                    geographic_labels=config.direction.geographic_labels,
+                )
+
+                analytics.maybe_count(track, display_frame.shape[0])
 
         # Staleness check uses video time so it reflects elapsed video seconds,
         # not wall-clock seconds (which would be wrong on a slow CPU).
