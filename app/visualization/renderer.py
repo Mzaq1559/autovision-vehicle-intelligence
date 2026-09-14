@@ -69,16 +69,14 @@ MAX_TRAJECTORY_JUMP_PX: float = 150.0
 
 
 def draw_trajectories(frame: np.ndarray, tracks: Iterable[VehicleTrack]) -> np.ndarray:
-    out = frame.copy()
-    for track in tracks:
-        pos = list(track.positions)
-        for i in range(1, len(pos)):
-            x1, y1, t1 = pos[i - 1]
-            x2, y2, t2 = pos[i]
-            if (t2 - t1) > MAX_TRAJECTORY_GAP_S or math.hypot(x2 - x1, y2 - y1) > MAX_TRAJECTORY_JUMP_PX:
-                continue
-            cv2.line(out, (int(x1), int(y1)), (int(x2), int(y2)), TRAJECTORY_COLOR, 2)
-    return out
+    """Trajectory history is intentionally kept in each track for analytics, but
+    the blue trail overlay is disabled to reduce clutter and avoid redundant
+    per-frame drawing work.
+
+    The function remains in place to preserve compatibility with any call sites
+    while the presentation layer stays clean.
+    """
+    return frame.copy()
 
 
 def draw_measurement_line(frame: np.ndarray, line_y_fraction: float) -> np.ndarray:
@@ -118,7 +116,7 @@ def render_frame(
     detections: Iterable[Detection],
     tracks: Dict[int, VehicleTrack],
     line_y_fraction: float,
-    show_trajectories: bool = True,
+    show_trajectories: bool = False,
     summary_lines: List[str] | None = None,
 ) -> np.ndarray:
     """Compose all overlays in a sensible draw order.
@@ -149,15 +147,10 @@ def render_frame(
     )
 
     # --- trajectories ---
-    if show_trajectories:
-        for track in tracks.values():
-            pos = list(track.positions)
-            for i in range(1, len(pos)):
-                x1, y1, t1 = pos[i - 1]
-                x2, y2, t2 = pos[i]
-                if (t2 - t1) > MAX_TRAJECTORY_GAP_S or math.hypot(x2 - x1, y2 - y1) > MAX_TRAJECTORY_JUMP_PX:
-                    continue
-                cv2.line(out, (int(x1), int(y1)), (int(x2), int(y2)), TRAJECTORY_COLOR, 2)
+    # Vehicle trajectory history remains available internally for analytics and
+    # speed/direction estimation, but the blue trail overlay is intentionally not
+    # rendered in the display frame to keep busy intersections uncluttered.
+    _ = show_trajectories
 
     # --- detection boxes + labels ---
     for det in detections:

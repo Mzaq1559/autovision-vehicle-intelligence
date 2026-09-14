@@ -103,7 +103,7 @@ def _sidebar_config(config: AppConfig) -> AppConfig:
         help="Real-world distance between the two calibration points. "
         "See docs/calibration.md.",
     )
-    show_trajectories = st.sidebar.checkbox("Show trajectories", value=True)
+    show_trajectories = st.sidebar.checkbox("Show trajectories", value=False)
 
     with st.sidebar.expander("Performance settings"):
         config.video.processing_width = st.sidebar.select_slider(
@@ -324,7 +324,7 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
             detections,
             tracks_by_id,
             config.measurement_zone.line_y_fraction,
-            show_trajectories=st.session_state.get("show_trajectories", True),
+            show_trajectories=st.session_state.get("show_trajectories", False),
             summary_lines=[
                 f"Active: {snapshot.active_vehicles}  Total: {snapshot.total_counted}",
                 f"Avg speed: {snapshot.average_speed_kmh} km/h  Violations: {snapshot.violations}",

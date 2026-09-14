@@ -37,22 +37,21 @@ def test_video_source_fps_sanitization(monkeypatch):
     assert source.fps == 30.0
 
 
-def test_draw_trajectories_skips_gaps_and_large_jumps():
+def test_draw_trajectories_is_disabled_without_removing_track_history():
     track = VehicleTrack(
         track_id=1, vehicle_type="car", confidence=0.9, first_seen=0.0, last_seen=2.0
     )
-    # Point 1 -> Point 2: normal (dt=0.1s, dist=10px)
-    track.positions.append((10.0, 10.0, 0.0))
-    track.positions.append((20.0, 10.0, 0.1))
-
-    # Point 2 -> Point 3: time gap (dt=1.0s > 0.5s)
-    track.positions.append((30.0, 10.0, 1.1))
-
-    # Point 3 -> Point 4: spatial jump (dist=500px > 150px)
-    track.positions.append((530.0, 10.0, 1.2))
+    track.positions.extend([
+        (10.0, 10.0, 0.0),
+        (20.0, 10.0, 0.1),
+        (30.0, 10.0, 1.1),
+        (530.0, 10.0, 1.2),
+    ])
 
     frame = np.zeros((100, 600, 3), dtype=np.uint8)
     rendered = draw_trajectories(frame, [track])
 
-    # Ensure function executes cleanly without error and returns non-empty image
     assert rendered.shape == frame.shape
+    assert np.array_equal(rendered, frame)
+    assert len(track.positions) == 4
+    assert track.positions[-1] == (530.0, 10.0, 1.2)
