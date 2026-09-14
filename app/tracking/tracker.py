@@ -72,8 +72,26 @@ class VehicleTracker:
         except ImportError:  # pragma: no cover
             return "cpu"
 
-    def track_frame(self, frame, frame_index: int) -> List[Detection]:
-        """Run detection+tracking on a single frame, returning Detections."""
+    def track_frame(
+        self,
+        frame,
+        frame_index: int,
+        video_timestamp: Optional[float] = None,
+    ) -> List[Detection]:
+        """Run detection+tracking on a single frame, returning Detections.
+
+        Args:
+            frame: BGR numpy array.
+            frame_index: 0-based index of this frame in the source video.
+                Always use the *original* source index even when frame-skipping
+                so that video-time calculations remain correct.
+            video_timestamp: Seconds elapsed in the video at this frame
+                (``frame_index / source.fps``).  Pass this for file sources so
+                that speed estimation uses video time rather than wall-clock
+                time.  When ``None`` (e.g. for a live webcam stream where
+                wall-clock *is* the correct reference), ``time.time()`` is used
+                as the fallback.
+        """
 
         model = self._ensure_model_loaded()
         allowed_classes = set(c.lower() for c in self.config.model.classes)
@@ -98,7 +116,9 @@ class VehicleTracker:
             return detections
 
         names = result.names
-        timestamp = time.time()
+        # Use caller-supplied video timestamp when available so that speed
+        # estimation reflects video time, not CPU processing time.
+        timestamp = video_timestamp if video_timestamp is not None else time.time()
 
         for box, track_id, cls_idx, conf in zip(
             boxes.xyxy.tolist(),

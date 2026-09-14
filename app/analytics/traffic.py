@@ -120,7 +120,7 @@ class TrafficAnalytics:
             tid for tid, t in self.tracks.items() if (now - t.last_seen) <= stale_after_s
         ]
 
-    def snapshot(self, active_ids: List[int]) -> TrafficSnapshot:
+    def snapshot(self, active_ids: List[int], record_history: bool = True) -> TrafficSnapshot:
         active = [self.tracks[tid] for tid in active_ids if tid in self.tracks]
         speeds = [t.current_speed_kmh for t in active if t.current_speed_kmh > 0]
         snap = TrafficSnapshot(
@@ -132,7 +132,12 @@ class TrafficAnalytics:
             violations=len(self.violation_log),
             counts_by_type=dict(self.counts_by_type),
         )
-        self.history.append(snap)
+        # Only append to history on UI-update frames so the chart data stays
+        # meaningful and the list does not grow to thousands of entries per run.
+        # The snapshot itself is always fully computed so the frame overlay text
+        # (active vehicles, avg speed) is always current.
+        if record_history:
+            self.history.append(snap)
         return snap
 
     def vehicle_table_rows(self, active_ids: List[int]) -> List[dict]:

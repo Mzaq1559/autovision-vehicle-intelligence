@@ -93,6 +93,35 @@ def _sidebar_config(config: AppConfig) -> AppConfig:
     )
     show_trajectories = st.sidebar.checkbox("Show trajectories", value=True)
 
+    with st.sidebar.expander("Performance settings"):
+        config.video.processing_width = st.sidebar.select_slider(
+            "Inference width (px)",
+            options=[0, 480, 640, 960, 1280],
+            value=int(config.video.processing_width),
+            help="Resolution used for YOLO inference. 0 = same as display width. "
+                 "Lower values are faster; detection boxes are scaled back to "
+                 "display resolution automatically.",
+        )
+        config.video.ui_update_interval = st.sidebar.number_input(
+            "UI update every N frames",
+            min_value=1,
+            max_value=60,
+            value=int(config.video.ui_update_interval),
+            step=1,
+            help="Metrics and the vehicle table refresh every N processed frames. "
+                 "The annotated video frame always updates every processed frame.",
+        )
+        config.video.frame_skip = st.sidebar.number_input(
+            "Frame skip",
+            min_value=0,
+            max_value=10,
+            value=int(config.video.frame_skip),
+            step=1,
+            help="Drop N source frames between each processed frame. "
+                 "0 = process every frame (default, safest for tracking). "
+                 "1 = process every 2nd frame. Keep conservative to avoid losing IDs.",
+        )
+
     with st.sidebar.expander("About speed estimates"):
         st.caption(
             "Speeds are approximate. They come from pixel displacement across "
@@ -116,33 +145,98 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
 
     tracker = VehicleTracker(config)
 
-    # Compute the target wall-clock interval per frame so playback approximates
-    # the source video's native FPS.  If processing a frame takes longer than
-    # this interval we never wait — the video simply plays at maximum processing
-    # speed instead.
-    target_frame_interval = 1.0 / source.fps if source.fps > 0 else 1.0 / 30.0
+    # Pipeline configuration.
+    ui_interval: int = max(1, int(config.video.ui_update_interval))
+    frame_skip: int = max(0, int(config.video.frame_skip))
+    # step = every (frame_skip+1)-th frame is processed; others are dropped.
+    step: int = frame_skip + 1
 
+    # Determine whether a separate inference resolution is requested.
+    # processing_width == 0 means "use display resolution" (no extra resize).
+    proc_width: int = max(0, int(config.video.processing_width))
+
+    # Persistent Streamlit placeholders — created once, reused every frame.
     frame_slot = st.empty()
     stats_slot = st.empty()
     table_slot = st.empty()
+    diag_slot = st.empty()   # lightweight diagnostics panel
 
     stop_button = st.button("Stop processing")
 
-    for frame_index, frame in source.frames():
-        # Record the start of this frame's work so we can pace playback below.
-        loop_start = time.time()
+    # Performance diagnostics — updated cheaply, rendered only on UI-update frames.
+    proc_start_wall = time.time()
+    processed_frames = 0
+    skipped_frames = 0
+    ui_updates = 0
+    last_snapshot: Optional[object] = None   # type: ignore[type-arg]
 
+    for frame_index, frame in source.frames():
         if stop_button:
             break
 
-        frame = resize_keep_aspect(frame, config.video.max_width)
+        # ── Frame skipping ────────────────────────────────────────────────
+        # Drop frames that are not on the processing cadence.  The original
+        # frame_index is preserved so video-time calculations are always correct.
+        if step > 1 and frame_index % step != 0:
+            skipped_frames += 1
+            continue
+
+        # ── Display-resolution resize (for output / overlay) ──────────────
+        display_frame = resize_keep_aspect(frame, config.video.max_width)
+        display_h, display_w = display_frame.shape[:2]
+
+        # ── Inference-resolution resize (optional) ────────────────────────
+        # When processing_width is set and smaller than the display width,
+        # run YOLO on a downscaled copy.  After tracking, all bounding-box
+        # coordinates are scaled back to display resolution so that overlays,
+        # speed estimation, and trajectory positions are all in display space.
+        if proc_width > 0 and proc_width < display_w:
+            infer_frame = resize_keep_aspect(display_frame, proc_width)
+            infer_h, infer_w = infer_frame.shape[:2]
+            coord_scale_x = display_w / infer_w
+            coord_scale_y = display_h / infer_h
+        else:
+            infer_frame = display_frame
+            coord_scale_x = 1.0
+            coord_scale_y = 1.0
+
+        # ── Video timestamp (not wall-clock) ──────────────────────────────
+        # Using the original source frame_index ensures speed estimation uses
+        # real video-time intervals regardless of CPU processing speed.
+        video_ts: float = frame_index / source.fps if source.fps > 0 else float(frame_index) / 30.0
+
         try:
-            detections = tracker.track_frame(frame, frame_index)
+            detections = tracker.track_frame(infer_frame, frame_index, video_timestamp=video_ts)
         except RuntimeError as exc:
             st.error(str(exc))
             break
 
-        now = time.time()
+        # Scale detection boxes back to display resolution if we inferred on a
+        # smaller frame.  Positions appended to VehicleTrack.positions below
+        # will be in display space — consistent with what render_frame() draws.
+        if coord_scale_x != 1.0 or coord_scale_y != 1.0:
+            from app.models.vehicle import Detection as _Det
+            scaled: list = []
+            for det in detections:
+                x1, y1, x2, y2 = det.bbox
+                scaled.append(
+                    _Det(
+                        track_id=det.track_id,
+                        class_name=det.class_name,
+                        confidence=det.confidence,
+                        bbox=(
+                            x1 * coord_scale_x,
+                            y1 * coord_scale_y,
+                            x2 * coord_scale_x,
+                            y2 * coord_scale_y,
+                        ),
+                        frame_index=det.frame_index,
+                        timestamp=det.timestamp,
+                    )
+                )
+            detections = scaled
+
+        # ── Analytics & speed estimation ──────────────────────────────────
         for det in detections:
             track = analytics.get_or_create_track(
                 det.track_id,
@@ -176,14 +270,28 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
                 geographic_labels=config.direction.geographic_labels,
             )
 
-            analytics.maybe_count(track, frame.shape[0])
+            analytics.maybe_count(track, display_frame.shape[0])
 
-        active_ids = analytics.active_track_ids(STALE_TRACK_SECONDS, now=now)
-        snapshot = analytics.snapshot(active_ids)
+        # Staleness check uses video time so it reflects elapsed video seconds,
+        # not wall-clock seconds (which would be wrong on a slow CPU).
+        active_ids = analytics.active_track_ids(STALE_TRACK_SECONDS, now=video_ts)
 
+        # Decide whether this is a UI-update frame.
+        # Always update on the very first processed frame (processed_frames == 0
+        # before the increment below) so the UI is never blank for the first
+        # ui_interval frames.
+        is_ui_frame = (processed_frames % ui_interval == 0)
+
+        # Snapshot: always compute (for overlay text) but only record history
+        # on UI-update frames to keep chart data meaningful.
+        snapshot = analytics.snapshot(active_ids, record_history=is_ui_frame)
+        last_snapshot = snapshot
+        processed_frames += 1
+
+        # ── Rendering ─────────────────────────────────────────────────────
         tracks_by_id = {tid: analytics.tracks[tid] for tid in active_ids}
         rendered = render_frame(
-            frame,
+            display_frame,
             detections,
             tracks_by_id,
             config.measurement_zone.line_y_fraction,
@@ -193,25 +301,64 @@ def _process_video(source: VideoSource, config: AppConfig) -> None:
                 f"Avg speed: {snapshot.average_speed_kmh} km/h  Violations: {snapshot.violations}",
             ],
         )
-        # Push the rendered frame and live stats to the persistent placeholders.
-        # Using the same st.empty() slots (frame_slot, stats_slot, table_slot)
-        # that were created once before the loop ensures Streamlit updates the
-        # existing browser elements rather than appending new ones.
+
+        # ── Video frame: update EVERY processed frame ──────────────────────
+        # Using the persistent frame_slot placeholder means Streamlit updates
+        # the existing browser element rather than appending a new one.
         frame_slot.image(cv2.cvtColor(rendered, cv2.COLOR_BGR2RGB), channels="RGB")
 
-        _render_stats(stats_slot, snapshot)
-        _render_table(table_slot, analytics, active_ids)
-
-        # Pace playback: sleep only the time remaining in the target frame
-        # interval.  If processing took longer than the interval (slow CPU /
-        # large model) we skip the sleep entirely so we never fall further
-        # behind — the video just plays at the maximum available speed.
-        elapsed = time.time() - loop_start
-        remaining = target_frame_interval - elapsed
-        if remaining > 0:
-            time.sleep(remaining)
+        # ── Metrics / table / diagnostics: update periodically ─────────────
+        if is_ui_frame:
+            ui_updates += 1
+            _render_stats(stats_slot, snapshot)
+            _render_table(table_slot, analytics, active_ids)
+            _render_diagnostics(
+                diag_slot,
+                source_fps=source.fps,
+                processed=processed_frames,
+                skipped=skipped_frames,
+                elapsed_wall=time.time() - proc_start_wall,
+                ui_updates=ui_updates,
+            )
 
     source.release()
+
+    # ── Final UI flush after the loop ─────────────────────────────────────
+    # Ensure metrics, table, and diagnostics reflect the final state even if
+    # the last frame was not a UI-update frame.
+    if last_snapshot is not None:
+        final_active_ids = analytics.active_track_ids(
+            STALE_TRACK_SECONDS,
+            now=video_ts if 'video_ts' in dir() else time.time(),  # type: ignore[name-defined]
+        )
+        # Force a final history record for the charts.
+        final_snapshot = analytics.snapshot(final_active_ids, record_history=True)
+        _render_stats(stats_slot, final_snapshot)
+        _render_table(table_slot, analytics, final_active_ids)
+        _render_diagnostics(
+            diag_slot,
+            source_fps=source.fps,
+            processed=processed_frames,
+            skipped=skipped_frames,
+            elapsed_wall=time.time() - proc_start_wall,
+            ui_updates=ui_updates,
+        )
+
+
+def _render_diagnostics(
+    slot,
+    source_fps: float,
+    processed: int,
+    skipped: int,
+    elapsed_wall: float,
+    ui_updates: int,
+) -> None:
+    with slot.container():
+        fps_proc = (processed / elapsed_wall) if elapsed_wall > 0 else 0.0
+        st.caption(
+            f"⚡ Processing Performance: **{fps_proc:.1f} FPS** "
+            f"(Processed: {processed} frames | Skipped: {skipped} frames | UI refreshes: {ui_updates} | Source FPS: {source_fps:.1f})"
+        )
 
 
 def _render_stats(slot, snapshot) -> None:

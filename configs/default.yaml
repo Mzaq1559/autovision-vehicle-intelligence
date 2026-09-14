@@ -54,6 +54,24 @@ counting:
 
 video:
   default_fps: 30.0
-  max_width: 1280
+  # max_width: display/output resolution cap (preserves aspect ratio).
+  # Lowered from 1280 to 960 as a better CPU-friendly default.
+  max_width: 960
+  # processing_width: resolution used for YOLO inference.
+  # Set lower than max_width for faster inference (e.g. 640).
+  # 0 = same as max_width (no separate inference resize).
+  # Detection boxes are automatically scaled back to display resolution.
+  processing_width: 0
+  # ui_update_interval: update Streamlit metrics/table every N processed frames.
+  # The annotated video frame still updates on every processed frame.
+  # Higher values reduce UI overhead on slow CPUs. Default: 5.
+  ui_update_interval: 5
+  # frame_skip: number of source frames to drop between each processed frame.
+  #   0 = process every frame (default, safest for tracking)
+  #   1 = process every 2nd frame  (first recommended CPU optimisation)
+  #   2 = process every 3rd frame
+  # Keep this conservative; aggressive skipping can cause ByteTrack to lose IDs.
+  # The original frame_index is always preserved for correct video-time calculation.
+  frame_skip: 0
 
 log_level: INFO
